@@ -1,0 +1,144 @@
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+from datetime import datetime, timedelta
+import asyncio
+
+# Настройки
+BOT_TOKEN = '8087335444:AAEiXqANP8akk_xiFnWJj6GH3VekwBHz67U'
+ADMIN_ID = 1455762505  # Ваш ID в Telegram
+CHANNEL_ID = '@awsqwrvxzgaw'  # Имя вашего канала
+
+# Инициализация бота и диспетчера
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Хранение постов и времени последнего поста
+pending_posts = {}
+last_post_time = {}
+
+# Команда /start
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    # Приветствие
+    await message.answer("Привет! Я бот для публикации постов в канале TBT.")
+
+    # Кнопка "Выложить пост"
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="Создать пост!", callback_data='create_post'))
+    await message.answer("Что бы написать текст для поста нажмите кнопку ниже:", reply_markup=builder.as_markup())
+
+# Обработка нажатия на кнопку "Выложить пост"
+@dp.callback_query(lambda query: query.data == 'create_post')
+async def create_post(query: types.CallbackQuery):
+    user_id = query.from_user.id
+    username = query.from_user.username
+    full_name = query.from_user.full_name
+
+    # Проверка времени последнего поста
+    if user_id in last_post_time:
+        last_post = last_post_time[user_id]
+        if datetime.now() - last_post < timedelta(hours=1):
+            await query.message.answer("Вы можете отправлять пост только раз в 24 часа.")
+            return
+
+    # Запрос текста поста
+    await query.message.answer("Напишите текст поста:")
+    pending_posts[user_id] = {"username": username, "full_name": full_name}
+
+# Обработка текстовых сообщений (текст поста)
+@dp.message()
+async def handle_message(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in pending_posts:
+        return  # Игнорируем сообщения, не связанные с созданием поста
+
+    text = message.text
+
+    # Сохраняем текст поста
+    pending_posts[user_id]["text"] = text
+
+    # Кнопки для отправки на проверку
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="Отправить на проверку", callback_data='send_for_review'))
+
+    await message.answer("Пост сохранен. Отправить на проверку?", reply_markup=builder.as_markup())
+
+# Обработка callback-запросов (отправка на проверку)
+@dp.callback_query(lambda query: query.data == 'send_for_review')
+async def send_for_review(query: types.CallbackQuery):
+    user_id = query.from_user.id
+    if user_id in pending_posts:
+        post_data = pending_posts[user_id]
+        post_text = post_data["text"]
+        username = post_data["username"]
+        full_name = post_data["full_name"]
+
+        # Кнопки для администратора
+        builder = InlineKeyboardBuilder()
+        builder.add(
+            InlineKeyboardButton(text="Одобрить", callback_data=f'approve_{user_id}'),
+            InlineKeyboardButton(text="Отклонить", callback_data=f'reject_{user_id}')
+        )
+
+        # Отправка поста администратору с информацией о пользователе
+        await bot.send_message(
+            ADMIN_ID,
+            f"Новый пост на проверку от пользователя:\n\n"
+            f"Имя: {full_name}\n"
+            f"Username: @{username}\n\n"
+            f"Текст поста:\n{post_text}",
+            reply_markup=builder.as_markup()
+        )
+        await query.message.edit_text("Пост отправлен на проверку.")
+    else:
+        await query.message.edit_text("Ошибка: пост не найден.")
+
+# Обработка одобрения поста
+
+@dp.callback_query(lambda query: query.data.startswith('approve_'))
+async def approve_post(query: types.CallbackQuery):
+    target_user_id = int(query.data.split('_')[1])
+    if target_user_id in pending_posts:
+        post_data = pending_posts[target_user_id]
+        post_text = post_data["text"]
+        username = post_data["username"]
+        full_name = post_data["full_name"]
+
+        # Добавляем информацию об авторе
+        if username:
+            author_info = f"\n\nНаписал: @{username}"
+        else:
+            author_info = f"\n\nНаписал: {full_name}"
+        full_post = f"{post_text}{author_info}"
+
+        # Публикация поста в канал
+        await bot.send_message(CHANNEL_ID, full_post)
+        await query.message.edit_text("Пост одобрен и опубликован в канал.")
+
+        # Обновление времени последнего поста
+        last_post_time[target_user_id] = datetime.now()
+        del pending_posts[target_user_id]
+    else:
+        await query.message.edit_text("Ошибка: пост не найден.")
+
+# Обработка отклонения поста
+@dp.callback_query(lambda query: query.data.startswith('reject_'))
+async def reject_post(query: types.CallbackQuery):
+    target_user_id = int(query.data.split('_')[1])
+    if target_user_id in pending_posts:
+        del pending_posts[target_user_id]
+        await query.message.edit_text("Пост отклонен.")
+    else:
+        await query.message.edit_text("Ошибка: пост не найден.")
+
+# Запуск бота
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(main())
